@@ -15,6 +15,8 @@ var armZ, armR, armE;
 var detect_type, led_mode, detect_react, picture_size, video_size, cpu_load;
 var cpu_temp, ram_usage, pan_angle, tilt_angle, wifi_rssi, base_voltage, video_fps;
 var cv_movtion_mode, base_light;
+var currentPowerMode = "active";
+var powerModeRequestPending = false;
 
 fetch('/config')
   .then(response => response.text())
@@ -584,15 +586,83 @@ function removeAllIcoClass(ElName){
     }
 }
 
+function renderPowerMode(mode, cameraActive) {
+    currentPowerMode = mode || "active";
+    var textEl = document.getElementById("power-mode-text");
+    var subTextEl = document.getElementById("camera-mode-text");
+    var btnEl = document.getElementById("power-mode-btn");
+    var panelEl = document.getElementById("power_mode_panel");
+    if (!textEl || !subTextEl || !btnEl || !panelEl) {
+        return;
+    }
+
+    panelEl.classList.remove("power_mode_active", "power_mode_standby");
+    if (currentPowerMode === "standby") {
+        textEl.innerHTML = "STANDBY";
+        subTextEl.innerHTML = cameraActive ? "Camera Online" : "Camera Offline";
+        btnEl.innerHTML = "Wake Up";
+        panelEl.classList.add("power_mode_standby");
+    } else {
+        textEl.innerHTML = "ACTIVE";
+        subTextEl.innerHTML = cameraActive ? "Camera Online" : "Camera Offline";
+        btnEl.innerHTML = "Standby";
+        panelEl.classList.add("power_mode_active");
+    }
+}
+
+function refreshPowerMode() {
+    fetch('/api/power-mode')
+        .then(response => response.json())
+        .then(data => {
+            renderPowerMode(data.power_mode, data.camera_active);
+        })
+        .catch(error => {
+            console.error('Error fetching power mode:', error);
+        });
+}
+
+function togglePowerMode() {
+    if (powerModeRequestPending) {
+        return;
+    }
+    powerModeRequestPending = true;
+    fetch('/api/power-mode', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({action: currentPowerMode === "standby" ? "wake" : "standby"})
+    })
+        .then(response => response.json())
+        .then(data => {
+            renderPowerMode(data.power_mode, data.camera_active);
+        })
+        .catch(error => {
+            console.error('Error toggling power mode:', error);
+        })
+        .finally(() => {
+            powerModeRequestPending = false;
+        });
+}
+
 var socketJson = io('http://' + location.host + '/json');
 socketJson.emit('json', {'T':1,'L':0,'R':0})
 
 var socket = io('http://' + location.host + '/ctrl');
 socket.emit('request_data');
+refreshPowerMode();
+
+document.addEventListener("DOMContentLoaded", function() {
+    var powerModeBtn = document.getElementById("power-mode-btn");
+    if (powerModeBtn) {
+        powerModeBtn.addEventListener("click", togglePowerMode);
+    }
+});
 
 var light_mode = 0;
 var cv_heartbeat_stop_flag = false;
 socket.on('update', function(data) {
+    if (typeof data.power_mode !== "undefined") {
+        renderPowerMode(data.power_mode, data.camera_active);
+    }
     if (data[base_voltage] != 0) {
         // console.log(data[detect_react]);
     } else {

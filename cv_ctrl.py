@@ -42,6 +42,13 @@ class OpencvFuncs():
         self.overlay = None
         self.scale_rate = 1
         self.video_quality = f['video']['default_quality']
+        self.camera_lock = threading.RLock()
+        self.camera = None
+        self.picam2 = None
+        self.encoder = None
+        self.camera_enabled = False
+        self.camera_error = ""
+        self.standby_mode = False
 
         # cv ctrl info
         self.cv_light_mode = 0
@@ -143,44 +150,21 @@ class OpencvFuncs():
         # osd settings
         self.add_osd = f['base_config']['add_osd']
 
-        # camera type detection
-        self.usb_camera_connected = self.usb_camera_detection()
-
-        # usb camera init
-        if self.usb_camera_connected:
-            self.camera = cv2.VideoCapture(0)
-            self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, f['video']['default_res_w'])
-            self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, f['video']['default_res_h'])
-
-        # csi camera init
-        if not self.usb_camera_connected:
-            print("init csi camera.")
-            self.encoder = H264Encoder(1000000)
-            self.picam2 = Picamera2()
-            self.picam2.configure(self.picam2.create_video_configuration(main={"format": 'XRGB8888', "size": (f['video']['default_res_w'], f['video']['default_res_h'])}))
-            self.picam2.start()
+        self.initialize_camera()
 
 
 
     def frame_process(self):
+        if self.standby_mode:
+            self.video_fps = 0
+            return self.build_status_frame("STANDBY MODE", "Wake camera from the web panel when needed.")
+
         try:
-            if self.usb_camera_connected:
-                success, input_frame = self.camera.read()
-                if not success:
-                    self.camera.release()
-                    time.sleep(1)
-                    self.camera = cv2.VideoCapture(0)
-            else:
-                input_frame = self.picam2.capture_array()
+            input_frame = self.read_camera_frame()
         except Exception as e:
             print(f"[cv_ctrl.frame_process] error: {e}")
-            input_frame = 255 * np.ones((480, 640, 3), dtype=np.uint8)
-            cv2.putText(input_frame, f"camera read failed... \n{e}", 
-                        (round(0.05*640), round(0.1*640 + 5 * 13)), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.369, (0, 0, 0), 1)
-            ret, buffer = cv2.imencode('.jpg', input_frame, [int(cv2.IMWRITE_JPEG_QUALITY), self.video_quality])
-            input_frame = buffer.tobytes()
-            return input_frame
+            self.camera_error = str(e)
+            return self.build_status_frame("CAMERA OFFLINE", self.camera_error)
 
         # opencv funcs
         if self.cv_mode != f['code']['cv_none']:
@@ -275,6 +259,108 @@ class OpencvFuncs():
 
 
 
+    def initialize_camera(self):
+        with self.camera_lock:
+            self.close_camera_locked()
+            self.usb_camera_connected = self.usb_camera_detection()
+            self.camera_error = ""
+            try:
+                if self.usb_camera_connected:
+                    camera = cv2.VideoCapture(0)
+                    camera.set(cv2.CAP_PROP_FRAME_WIDTH, f['video']['default_res_w'])
+                    camera.set(cv2.CAP_PROP_FRAME_HEIGHT, f['video']['default_res_h'])
+                    if not camera.isOpened():
+                        raise RuntimeError("USB camera open failed")
+                    self.camera = camera
+                    self.picam2 = None
+                else:
+                    print("init csi camera.")
+                    self.encoder = H264Encoder(1000000)
+                    self.picam2 = Picamera2()
+                    self.picam2.configure(
+                        self.picam2.create_video_configuration(
+                            main={"format": 'XRGB8888', "size": (f['video']['default_res_w'], f['video']['default_res_h'])}
+                        )
+                    )
+                    self.picam2.start()
+                    self.camera = None
+                self.camera_enabled = True
+                return True
+            except Exception as e:
+                self.camera = None
+                self.picam2 = None
+                self.encoder = None
+                self.camera_enabled = False
+                self.camera_error = str(e)
+                print(f"[cv_ctrl.initialize_camera] error: {e}")
+                return False
+
+    def close_camera_locked(self):
+        if self.camera is not None:
+            try:
+                self.camera.release()
+            except Exception as e:
+                print(f"[cv_ctrl.close_camera_locked] usb release error: {e}")
+            self.camera = None
+        if self.picam2 is not None:
+            try:
+                self.picam2.stop()
+            except Exception as e:
+                print(f"[cv_ctrl.close_camera_locked] picam stop error: {e}")
+            try:
+                self.picam2.close()
+            except Exception as e:
+                print(f"[cv_ctrl.close_camera_locked] picam close error: {e}")
+            self.picam2 = None
+        self.encoder = None
+        self.camera_enabled = False
+
+    def close_camera(self):
+        with self.camera_lock:
+            self.close_camera_locked()
+
+    def read_camera_frame(self):
+        with self.camera_lock:
+            if self.standby_mode:
+                raise RuntimeError("camera is in standby mode")
+
+            if not self.camera_enabled and not self.initialize_camera():
+                raise RuntimeError(self.camera_error or "camera init failed")
+
+            if self.usb_camera_connected:
+                success, input_frame = self.camera.read()
+                if not success:
+                    self.close_camera_locked()
+                    time.sleep(1)
+                    if not self.initialize_camera() or self.camera is None:
+                        raise RuntimeError(self.camera_error or "usb camera reconnect failed")
+                    success, input_frame = self.camera.read()
+                    if not success:
+                        raise RuntimeError("usb camera read failed")
+            else:
+                if self.picam2 is None and not self.initialize_camera():
+                    raise RuntimeError(self.camera_error or "csi camera reconnect failed")
+                input_frame = self.picam2.capture_array()
+
+            return input_frame
+
+    def build_status_frame(self, title, subtitle):
+        width = f['video']['default_res_w']
+        height = f['video']['default_res_h']
+        frame = np.zeros((height, width, 3), dtype=np.uint8)
+        frame[:] = (22, 24, 29)
+        cv2.rectangle(frame, (40, 40), (width - 40, height - 40), (79, 245, 192), 2)
+        cv2.putText(frame, title, (60, 120), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (79, 245, 192), 2)
+
+        wrapped_lines = textwrap.wrap(str(subtitle), 42)[:4]
+        for idx, line in enumerate(wrapped_lines):
+            cv2.putText(frame, line, (60, 180 + idx * 35), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (216, 216, 216), 2)
+
+        ret, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), self.video_quality])
+        if not ret:
+            raise RuntimeError("status frame encode failed")
+        return buffer.tobytes()
+
     def usb_camera_detection(self):
         lsusb_output = subprocess.check_output(["lsusb"]).decode("utf-8")
         if "Camera" in lsusb_output:
@@ -315,13 +401,30 @@ class OpencvFuncs():
         return osd_frame
 
     def picture_capture(self):
+        if self.standby_mode:
+            return False
         self.picture_capture_flag = True
+        return True
 
     def video_record(self, input_cmd):
+        if input_cmd and self.standby_mode:
+            return False
         if input_cmd:
             self.set_video_record_flag = True
         else:
             self.set_video_record_flag = False
+            self.stop_recording_writer()
+        return True
+
+    def stop_recording_writer(self):
+        if self.writer is not None:
+            try:
+                self.writer.close()
+            except Exception as e:
+                print(f"[cv_ctrl.stop_recording_writer] error: {e}")
+        self.writer = None
+        self.video_record_status_flag = False
+        self.set_video_record_flag = False
 
     def scale_ctrl(self, input_rate):
         if input_rate < 1:
@@ -338,9 +441,12 @@ class OpencvFuncs():
             self.video_quality = int(input_quality)
 
     def set_cv_mode(self, input_mode):
+        if self.standby_mode and input_mode != f['code']['cv_none']:
+            return False
         self.cv_mode = input_mode
         if self.cv_mode == f['code']['cv_none']:
             self.set_video_record_flag = False
+        return True
 
     def set_detection_reaction(self, input_reaction):
         self.detection_reaction_mode = input_reaction
@@ -907,6 +1013,8 @@ class OpencvFuncs():
         cv_thread.start()
 
     def head_light_ctrl(self, input_mode):
+        if self.standby_mode and input_mode != 0:
+            return False
         self.cv_light_mode = input_mode
         if input_mode == 0:
             self.base_ctrl.lights_ctrl(self.base_ctrl.base_light_status, 0)
@@ -923,6 +1031,7 @@ class OpencvFuncs():
             elif self.base_ctrl.head_light_status != 0:
                 self.cv_light_mode = 0
                 self.base_ctrl.lights_ctrl(self.base_ctrl.base_light_status, 0)
+        return True
 
     def set_movtion_lock(self, input_cmd):
         if not input_cmd:
@@ -968,6 +1077,26 @@ class OpencvFuncs():
             self.track_spd_rate = float(args_2)
         elif args_1 == '-a' or args_1 == '--acc':
             self.track_acc_rate = float(args_2)
+
+    def set_standby(self, enabled):
+        if enabled:
+            self.set_cv_mode(f['code']['cv_none'])
+            self.set_detection_reaction(f['code']['re_none'])
+            self.head_light_ctrl(0)
+            self.stop_recording_writer()
+            self.overlay = None
+            self.avg = None
+            self.cv_event.clear()
+            self.video_fps = 0
+            self.standby_mode = True
+            self.close_camera()
+            return True
+
+        self.standby_mode = False
+        return self.initialize_camera()
+
+    def is_camera_active(self):
+        return self.camera_enabled and not self.standby_mode
 
     def timelapse(self, input_speed, input_time, input_interval, input_loop_times):
         self.mission_flag = True

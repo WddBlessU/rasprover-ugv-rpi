@@ -46,6 +46,7 @@ import logging
 import cv_ctrl
 import audio_ctrl
 import os_info
+from power_mode import StandbyManager
 
 # Get system info
 UPLOAD_FOLDER = thisPath + '/sounds/others'
@@ -68,6 +69,29 @@ pcs = set()
 
 # Camera funcs
 cvf = cv_ctrl.OpencvFuncs(thisPath, base)
+standby_manager = StandbyManager(cvf, base, audio_ctrl, f)
+standby_blocked_actions = {
+    f['code']['pic_cap'],
+    f['code']['vid_sta'],
+    f['code']['zoom_x1'],
+    f['code']['zoom_x2'],
+    f['code']['zoom_x4'],
+    f['code']['cv_moti'],
+    f['code']['cv_face'],
+    f['code']['cv_objs'],
+    f['code']['cv_clor'],
+    f['code']['mp_hand'],
+    f['code']['cv_auto'],
+    f['code']['mp_face'],
+    f['code']['mp_pose'],
+    f['code']['re_capt'],
+    f['code']['re_reco'],
+    f['code']['led_aut'],
+    f['code']['led_ton'],
+    f['code']['base_on'],
+    f['code']['head_ct'],
+    f['code']['base_ct'],
+}
 
 cmd_actions = {
     f['code']['zoom_x1']: lambda: cvf.scale_ctrl(1),
@@ -148,7 +172,8 @@ def generate_frames():
 # Route to render the HTML template
 @app.route('/')
 def index():
-    audio_ctrl.play_random_audio("connected", False)
+    if standby_manager.mode == "active":
+        audio_ctrl.play_random_audio("connected", False)
     return render_template('index.html')
 
 @app.route('/config')
@@ -156,6 +181,29 @@ def get_config():
     with open(thisPath + '/config.yaml', 'r') as file:
         yaml_content = file.read()
     return yaml_content
+
+@app.route('/api/power-mode', methods=['GET'])
+def get_power_mode():
+    return jsonify(standby_manager.get_status())
+
+@app.route('/api/power-mode', methods=['POST'])
+def set_power_mode():
+    data = request.get_json(silent=True) or {}
+    action = str(data.get('action', 'toggle')).lower()
+    try:
+        if action == 'standby':
+            result = standby_manager.enter_standby()
+        elif action == 'wake':
+            result = standby_manager.wake_up()
+        elif action == 'toggle':
+            result = standby_manager.toggle()
+        else:
+            return jsonify({"status": "error", "message": f"unsupported action: {action}"}), 400
+        threading.Thread(target=update_data_websocket_single, daemon=True).start()
+        return jsonify({"status": "success", **result})
+    except Exception as e:
+        print(f"[app.set_power_mode] error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 # get pictures and videos.
 @app.route('/<path:filename>')
@@ -502,7 +550,10 @@ def update_data_websocket_single():
             f['fb']['base_voltage']:base.base_data['v'],
             f['fb']['video_fps']:   cvf.video_fps,
             f['fb']['cv_movtion_mode']: cvf.cv_movtion_lock,
-            f['fb']['base_light']:  base.base_light_status
+            f['fb']['base_light']:  base.base_light_status,
+            'power_mode':           standby_manager.mode,
+            'camera_active':        cvf.is_camera_active(),
+            'power_updated_at':     standby_manager.updated_at
         }
         socketio.emit('update', socket_data, namespace='/ctrl')
     except Exception as e:
@@ -558,6 +609,10 @@ def handle_socket_cmd(message):
         print("Error decoding JSON.[app.handle_socket_cmd]")
         return
     cmd_a = float(json_data.get("A", 0))
+    if standby_manager.mode == "standby" and cmd_a in standby_blocked_actions:
+        cvf.info_update("Wake the camera before CV, record, or light controls.", (79, 245, 192), 0.42)
+        threading.Thread(target=update_data_websocket_single, daemon=True).start()
+        return
     if cmd_a in cmd_actions:
         cmd_actions[cmd_a]()
     else:

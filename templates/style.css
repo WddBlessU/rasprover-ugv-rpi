@@ -401,6 +401,28 @@ main {
     height: 48px;
     margin: 0 5px;
 }
+.power_mode_panel{
+    padding: 12px;
+    border: 1px solid rgba(202,213,255,0.08);
+    border-radius: 8px;
+    background: rgba(203,213,255,0.04);
+}
+.power_mode_text{
+    font-size: 18px;
+    font-weight: bold;
+    letter-spacing: 0.08em;
+    margin-bottom: 4px;
+}
+.power_mode_subtext{
+    color: #9ca3b7;
+    margin-bottom: 10px;
+}
+.power_mode_active .power_mode_text{
+    color: #4FF5C0;
+}
+.power_mode_standby .power_mode_text{
+    color: #F5BD5F;
+}
 .feed_ctrl_btn .btn_ico::before{margin-right: 6px;}
 .ctl_btn:hover{border: 1px solid rgba(202,213,255,0.3);}
 .ctl_btn_active{
