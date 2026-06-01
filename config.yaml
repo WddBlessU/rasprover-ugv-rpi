@@ -12,6 +12,12 @@ audio_config:
   default_volume: 1.0
   min_time_bewteen_play: 1
   speed_rate: 180
+tts_config:
+  default_engine: edge
+  default_voice: zh-CN-XiaoxiaoNeural
+  default_rate: '+0%'
+  cache_dir: sounds/tts_cache
+  max_text_length: 500
 base_config:
   add_osd: false
   extra_sensor: false

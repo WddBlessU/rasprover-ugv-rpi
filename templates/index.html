@@ -175,14 +175,21 @@
                 </div>
                 <div>
                     <div class="audio_input">
-                        <div class="audio-files">
-                            <div id="audioFiles" class="audio_list">
-                                <div id="audioFilesDrag" class="audio-drop">Drop audio files here!</div>
-                                <!-- <ol>
-                                    <li>1<span class="audioplay"></span><span>Drop audio files here.mp3</span></li>
-                                </ol>-->
+                        <div class="audio-control-panel">
+                            <div class="audio-control-head">
+                                <span>Audio Broadcast</span>
+                                <button id="stopButton" class="audio-stop-btn" type="button">Stop</button>
                             </div>
-                            <div style="visibility: hidden;" id="stopButton" class="pause"><div></div></div>
+                            <textarea id="ttsTextInput" class="tts-text-input" placeholder="输入要播报的中文内容"></textarea>
+                            <div class="audio-volume-row">
+                                <span>Volume</span>
+                                <input id="audioVolumeInput" type="range" min="0" max="200" value="100">
+                                <span id="audioVolumeValue">100%</span>
+                            </div>
+                            <div class="audio-action-row">
+                                <button id="ttsSpeakButton" class="normal_btn normal_btn_size normal_btn_w" type="button">Speak</button>
+                            </div>
+                            <div id="ttsStatusLine" class="tts-status-line">Ready</div>
                         </div>
                     </div>
                 </div>
@@ -271,9 +278,11 @@
                         <div>
                             <h2 class="sc_title feed_ct_tt">Power Mode</h2>
                             <div id="power_mode_panel" class="power_mode_panel">
-                                <p id="power-mode-text" class="power_mode_text">ACTIVE</p>
-                                <p id="camera-mode-text" class="power_mode_subtext">Camera Online</p>
-                                <div><button id="power-mode-btn" class="ctl_btn">Standby</button></div>
+                                <div class="power_mode_copy">
+                                    <p id="power-mode-text" class="power_mode_text">ACTIVE</p>
+                                    <p id="camera-mode-text" class="power_mode_subtext">Camera Online</p>
+                                </div>
+                                <div class="power_mode_action"><button id="power-mode-btn" class="ctl_btn">Standby</button></div>
                             </div>
                         </div>
                         <div class="long_btn new_page" id="open_jupyter">

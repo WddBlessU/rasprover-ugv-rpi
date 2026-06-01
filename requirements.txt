@@ -37,6 +37,7 @@ dill==0.3.6
 distro==1.8.0
 dnspython==2.6.1
 docutils==0.19
+edge-tts==7.2.8
 executing==2.0.1
 fastjsonschema==2.19.0
 filelock==3.13.1

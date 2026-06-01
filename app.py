@@ -50,6 +50,7 @@ from power_mode import StandbyManager
 
 # Get system info
 UPLOAD_FOLDER = thisPath + '/sounds/others'
+TTS_CACHE_DIR = os.path.join(thisPath, f['tts_config'].get('cache_dir', 'sounds/tts_cache'))
 si = os_info.SystemInfo()
 
 # Create a Flask app instance
@@ -505,15 +506,57 @@ def upload_audio():
 
 @app.route('/playAudio', methods=['POST'])
 def play_audio():
-    audio_file = request.form['audio_file']
-    print(thisPath + '/sounds/others/' + audio_file)
-    audio_ctrl.play_audio_thread(thisPath + '/sounds/others/' + audio_file)
-    return jsonify({'success': 'Audio is playing'})
+    try:
+        audio_file = request.form['audio_file']
+        print(thisPath + '/sounds/others/' + audio_file)
+        started = audio_ctrl.play_audio_thread(thisPath + '/sounds/others/' + audio_file, interrupt=True)
+        if not started:
+            return jsonify({'status': 'error', 'message': 'Audio is busy'}), 409
+        return jsonify({'status': 'success', 'message': 'Audio is playing'})
+    except Exception as e:
+        print(f"[app.play_audio] error: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @app.route('/stop_audio', methods=['POST'])
 def audio_stop():
-    audio_ctrl.stop()
-    return jsonify({'success': 'Audio stop'})
+    try:
+        audio_ctrl.stop()
+        return jsonify({'status': 'success', 'message': 'Audio stopped'})
+    except Exception as e:
+        print(f"[app.audio_stop] error: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/api/tts/status', methods=['GET'])
+def get_tts_status():
+    status = audio_ctrl.get_audio_status()
+    return jsonify({
+        'status': 'success',
+        **status,
+        'engine': f['tts_config'].get('default_engine', 'edge'),
+        'voice': f['tts_config'].get('default_voice', 'zh-CN-XiaoxiaoNeural'),
+        'rate': f['tts_config'].get('default_rate', '+0%'),
+    })
+
+@app.route('/api/tts/speak', methods=['POST'])
+def tts_speak():
+    data = request.get_json(silent=True) or {}
+    text = str(data.get('text', '')).strip()
+    max_text_length = int(f['tts_config'].get('max_text_length', 500))
+    if not text:
+        return jsonify({'status': 'error', 'message': '播报文本不能为空'}), 400
+    if len(text) > max_text_length:
+        return jsonify({'status': 'error', 'message': f'播报文本过长，请控制在 {max_text_length} 字以内'}), 400
+
+    voice = str(data.get('voice') or f['tts_config'].get('default_voice', 'zh-CN-XiaoxiaoNeural'))
+    rate = str(data.get('rate') or f['tts_config'].get('default_rate', '+0%'))
+    volume = data.get('volume', f['audio_config'].get('default_volume', 1.0))
+
+    try:
+        result = audio_ctrl.play_edge_tts_thread(text, voice, rate, volume, TTS_CACHE_DIR)
+        return jsonify({'status': 'success', **result})
+    except Exception as e:
+        print(f"[app.tts_speak] error: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @app.route('/settings/<path:filename>')
 def serve_static_settings(filename):

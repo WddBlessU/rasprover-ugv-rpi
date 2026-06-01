@@ -1347,111 +1347,151 @@ window.requestAnimationFrame(readGamepad);
 
 
 
-// audio drag & play
-updateAudioFileList();
-var audioFilesElement = document.getElementById('audioFiles');
+// TTS audio control
+var ttsStatusPollTimer = null;
+var ttsSawPlaying = false;
 
-// 拖拽事件监听
-audioFilesElement.addEventListener('dragover', function(event) {
-  event.preventDefault(); // 阻止默认行为
-});
-
-audioFilesElement.addEventListener('drop', function(event) {
-  event.preventDefault(); // 阻止默认行为
-  var files = event.dataTransfer.files; // 获取拖拽的文件
-  uploadFiles(files); // 调用上传函数
-});
-
-function updateAudioFileList() {
-    var pauseBtn = document.getElementById('stopButton');
-    pauseBtn.style.visibility = 'visible';
-  fetch('/getAudioFiles')
-    .then(response => response.json())
-    .then(files => {
-    var audioFilesElement = document.getElementById('audioFiles');
-    audioFilesElement.innerHTML = ''; // 清空当前列表
-    var ol = document.createElement('ol');
-    var counter = 1;
-      files.forEach(file => {
-        var listIterm = document.createElement('li');
-        var listItermspan1 = document.createElement('span');
-        var listItermspan2 = document.createElement('span');
-        var textNode = document.createTextNode(counter);
-        counter++;
-        listItermspan1.className = 'audioplay';
-        listItermspan2.setAttribute('data-file-path', file);
-        listItermspan2.textContent = file;
-        listIterm.appendChild(textNode);
-        listIterm.appendChild(listItermspan1);
-        listIterm.appendChild(listItermspan2);
-        // 添加双击播放事件
-        listIterm.addEventListener('click', function() {
-            var span2 = this.querySelector('span:nth-child(2)');
-            var filePath = span2.getAttribute('data-file-path');
-            fetch('/playAudio', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-              },
-              body: 'audio_file=' + encodeURIComponent(filePath)
-            })
-            .then(response => response.json())
-            .then(data => {
-              console.log('Audio is playing');
-            })
-            .catch(error => console.error('Error:', error));
-        });
-
-        ol.appendChild(listIterm);
-      });
-      audioFilesElement.appendChild(ol);
-      
-    })
-    .catch(error => console.error('Error:', error));
-}
-  
-// 文件上传函数
-function uploadFiles(files) {
-  for (var i = 0; i < files.length; i++) {
-    var file = files[i];
-    // 创建 FormData 对象用于发送文件
-    var formData = new FormData();
-    formData.append('file', file);
-
-    // 发送请求到服务器（树莓派）
-    fetch('/uploadAudio', {
-      method: 'POST',
-      body: formData
-    })
-    .then(response => response.json())
-    .then(data => {
-      console.log('Success:', data);
-      // 可以在这里更新音频文件列表
-      updateAudioFileList();
-    })
-    .catch((error) => {
-      console.error('Error:', error);
-    });
-  }
+function setTtsStatus(message, success) {
+    var statusLine = document.getElementById('ttsStatusLine');
+    if (!statusLine) {
+        return;
+    }
+    statusLine.textContent = message;
+    statusLine.classList.remove('tts-status-success', 'tts-status-error');
+    if (success === true) {
+        statusLine.classList.add('tts-status-success');
+    } else if (success === false) {
+        statusLine.classList.add('tts-status-error');
+    }
 }
 
-document.getElementById('stopButton').addEventListener('click', function() {
-    fetch('/stop_audio', {
+function stopTtsStatusPolling() {
+    if (ttsStatusPollTimer) {
+        clearInterval(ttsStatusPollTimer);
+        ttsStatusPollTimer = null;
+    }
+}
+
+function startTtsStatusPolling() {
+    stopTtsStatusPolling();
+    ttsSawPlaying = false;
+    ttsStatusPollTimer = setInterval(function() {
+        fetch('/api/tts/status')
+            .then(response => response.json().then(data => ({ok: response.ok, data: data})))
+            .then(result => {
+                if (!result.ok || result.data.status === 'error') {
+                    throw new Error(result.data.message || '获取播放状态失败');
+                }
+                if (result.data.playing) {
+                    ttsSawPlaying = true;
+                    setTtsStatus('正在播放...', true);
+                    return;
+                }
+                if (ttsSawPlaying) {
+                    stopTtsStatusPolling();
+                    setTtsStatus('播放完成', true);
+                }
+            })
+            .catch(error => {
+                stopTtsStatusPolling();
+                setTtsStatus(error.message || String(error), false);
+            });
+    }, 600);
+}
+
+function getTtsVolume() {
+    var volumeInput = document.getElementById('audioVolumeInput');
+    if (!volumeInput) {
+        return 1;
+    }
+    return Math.max(0, Math.min(200, Number(volumeInput.value || 0))) / 100;
+}
+
+function updateTtsVolumeLabel() {
+    var volumeInput = document.getElementById('audioVolumeInput');
+    var volumeValue = document.getElementById('audioVolumeValue');
+    if (volumeInput && volumeValue) {
+        volumeValue.textContent = volumeInput.value + '%';
+        if (Number(volumeInput.value) > 150) {
+            setTtsStatus('高于 150% 可能产生失真，请谨慎使用', null);
+        }
+    }
+}
+
+function speakTtsText() {
+    var textInput = document.getElementById('ttsTextInput');
+    var speakButton = document.getElementById('ttsSpeakButton');
+    var text = textInput ? textInput.value.trim() : '';
+    if (!text) {
+        setTtsStatus('请输入要播报的中文内容', false);
+        return;
+    }
+
+    if (speakButton) {
+        speakButton.disabled = true;
+    }
+    setTtsStatus('正在生成语音...', null);
+
+    fetch('/api/tts/speak', {
         method: 'POST',
-        headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        body: 'command=' + 0
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            text: text,
+            volume: getTtsVolume()
+        })
     })
-    .then(response => response.json())
-    .then(data => {
-        console.log(data);
-        // 处理响应
+    .then(response => response.json().then(data => ({ok: response.ok, data: data})))
+    .then(result => {
+        if (!result.ok || result.data.status === 'error') {
+            throw new Error(result.data.message || 'TTS 播放失败');
+        }
+        setTtsStatus(result.data.message || 'TTS 播报已开始', true);
+        startTtsStatusPolling();
     })
     .catch(error => {
-        console.error('Error:', error);
+        setTtsStatus(error.message || String(error), false);
+    })
+    .finally(() => {
+        if (speakButton) {
+            speakButton.disabled = false;
+        }
     });
-});
+}
+
+function stopAudioPlayback() {
+    stopTtsStatusPolling();
+    fetch('/stop_audio', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'command=0'
+    })
+    .then(response => response.json().then(data => ({ok: response.ok, data: data})))
+    .then(result => {
+        if (!result.ok || result.data.status === 'error') {
+            throw new Error(result.data.message || '停止播放失败');
+        }
+        setTtsStatus(result.data.message || 'Audio stopped', true);
+    })
+    .catch(error => {
+        setTtsStatus(error.message || String(error), false);
+    });
+}
+
+var audioVolumeInput = document.getElementById('audioVolumeInput');
+if (audioVolumeInput) {
+    audioVolumeInput.addEventListener('input', updateTtsVolumeLabel);
+    updateTtsVolumeLabel();
+}
+
+var ttsSpeakButton = document.getElementById('ttsSpeakButton');
+if (ttsSpeakButton) {
+    ttsSpeakButton.addEventListener('click', speakTtsText);
+}
+
+var stopButton = document.getElementById('stopButton');
+if (stopButton) {
+    stopButton.addEventListener('click', stopAudioPlayback);
+}
 
 document.getElementById('open_jupyter').addEventListener('click', function() {
     var currentUrl = window.location.href;
